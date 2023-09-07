@@ -12,6 +12,9 @@ app.use(cors());
 
 app.use(express.urlencoded({extended: true}));
 app.use(express.json());
+const { generateResetToken, generateExpirationTimestamp, updateUserResetToken,
+  sendPasswordResetEmail } = require('./functions/token.js');
+
 
 
 app.use((req, res, next) => {
@@ -305,6 +308,70 @@ app.put('/todos/:id', async (req, res) => {
 });
 
 
+
+app.post('/reset-password', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    const userExists = await pool.query('SELECT * FROM users WHERE email = ?', [email]);
+
+    if (userExists.length === 0) {
+      return res.status(400).json({ error: 'User does not exist' });
+    }
+
+    const resetToken = generateResetToken();
+    const expirationTimestamp = generateExpirationTimestamp();
+
+    await updateUserResetToken(email, resetToken, expirationTimestamp);
+
+    sendPasswordResetEmail(email, resetToken);
+
+    res.status(200).json({ message: 'Password reset email sent successfully' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
+
+app.put('/reset-password/:resetToken', async (req, res) => {
+  try {
+    const { resetToken } = req.params;
+    const { newPassword } = req.body;
+
+    // Retrieve the user's record by the reset token from the database
+    const [userResult] = await pool.query('SELECT * FROM users WHERE reset_token = ?', [resetToken]);
+
+    // Check if the reset token is valid and the user exists
+    if (userResult.length === 0) {
+      return res.status(404).json({ error: 'Invalid reset token' });
+    }
+
+    const user = userResult[0];
+
+    // Check if the reset token has expired (compare the current time with the stored expiration timestamp)
+    const currentTimestamp = new Date().getTime();
+    const expirationTimestamp = new Date(user.reset_token_expiration).getTime();
+
+    if (currentTimestamp > expirationTimestamp) {
+      return res.status(401).json({ error: 'Reset token has expired' });
+    }
+
+    // Hash the new password
+    const saltRounds = 10;
+    const hashedPassword = await bcrypt.hash(newPassword, saltRounds);
+
+    // Update the user's password and clear the reset token and expiration
+    await pool.query(
+      'UPDATE users SET password = ?, reset_token = NULL, reset_token_expiration = NULL WHERE id = ?',
+      [hashedPassword, user.id]
+    );
+
+    res.status(200).json({ message: 'Password reset successful' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Internal Server Error' });
+  }
+});
 
 
 
